@@ -1,21 +1,15 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{keccak, program::invoke_signed, system_instruction};
-
-// Added Clock sysvar
 use anchor_lang::solana_program::sysvar::clock::Clock;
-use std::str::FromStr; // Import FromStr
+use anchor_lang::solana_program::{keccak, program::invoke_signed, system_instruction};
+use std::str::FromStr;
 
 declare_id!("8JD6JtkBzExbDZkpQBvowXngMr9tDqLwf5sGGjBacwK8");
 
-// --- Global Game Seed ---
+// --- Hardcoded Constants ---
 const GLOBAL_GAME_SEED: &[u8] = b"GLOBAL_GAME_SINGLETON";
-
-// --- Hardcoded Authority ---
-const GAME_AUTHORITY_PUBKEY: &str = "8KohbspeoxcieAqgn8zDCBUTyQYyEx1SpfjrghsouscQ";
-
-// --- Hardcoded Timestamps ---
-const SUBMISSION_DEADLINE_TIMESTAMP: i64 = 1745208000; // 21st April 2025 12:00 AM UTC
-const REVEAL_DEADLINE_TIMESTAMP: i64 = 1745812800; // 28th April 2025 12:00 AM UTC
+const GAME_AUTHORITY_PUBKEY: &str = "JDUcdJdTH8j352LvXhWbDKPb7WzTWH8VkfwXeBX2NT7U";
+const SUBMISSION_DEADLINE_TIMESTAMP: i64 = 1745208000; // 21st April 2025 4 AM GMT (or 2 PM AEDT)
+const REVEAL_DEADLINE_TIMESTAMP: i64 = 1745812800; // 28th April 2025 4 AM GMT (or 2 PM AEDT)
 
 // --- Payout Curve Constants ---
 // Multiplier M(x) = 3.9 * exp(-0.1 * x) + 0.1 where x = result - guess
@@ -43,11 +37,8 @@ pub mod nug_wager_protocol {
 
     pub fn initialize_game(ctx: Context<InitializeGame>) -> Result<()> {
         let game = &mut ctx.accounts.game;
-
-        // Set the hardcoded authority
-        game.authority = Pubkey::from_str(GAME_AUTHORITY_PUBKEY).map_err(
-            |_| ProgramError::InvalidArgument, // Or a custom error
-        )?;
+        game.authority =
+            Pubkey::from_str(GAME_AUTHORITY_PUBKEY).map_err(|_| ProgramError::InvalidArgument)?;
         game.result = None;
         game.is_open_for_bets = true;
         game.is_open_for_reveals = false;
@@ -233,12 +224,7 @@ pub mod nug_wager_protocol {
                 GameError::InsufficientTreasuryFunds
             );
 
-            let game_key = game.key();
-            let seeds = &[
-                b"treasury".as_ref(),
-                game_key.as_ref(),
-                &[game.treasury_bump],
-            ];
+            let seeds = &[b"treasury".as_ref(), &[game.treasury_bump]];
             let signer_seeds = &[&seeds[..]];
             let transfer_instruction = system_instruction::transfer(
                 ctx.accounts.game_treasury.key,
@@ -299,12 +285,7 @@ pub mod nug_wager_protocol {
             GameError::InsufficientTreasuryForReclaim
         );
 
-        let game_key = game.key();
-        let seeds = &[
-            b"treasury".as_ref(),
-            game_key.as_ref(),
-            &[game.treasury_bump],
-        ];
+        let seeds = &[b"treasury".as_ref(), &[game.treasury_bump]];
         let signer_seeds = &[&seeds[..]];
         invoke_signed(
             &system_instruction::transfer(
@@ -343,26 +324,15 @@ pub mod nug_wager_protocol {
             GameError::RevealDeadlineNotReached
         );
 
-        // Get the amount to transfer (entire treasury balance)
         let transfer_amount = ctx.accounts.game_treasury.to_account_info().lamports();
-
-        require!(
-            transfer_amount > 0,
-            GameError::TreasuryIsEmpty // Need a new error or reuse InsufficientTreasury
-        );
-
-        let game_key = game.key();
-        let seeds = &[
-            b"treasury".as_ref(),
-            game_key.as_ref(),
-            &[game.treasury_bump],
-        ];
+        require!(transfer_amount > 0, GameError::TreasuryIsEmpty);
+        let seeds = &[b"treasury".as_ref(), &[game.treasury_bump]];
         let signer_seeds = &[&seeds[..]];
         invoke_signed(
             &system_instruction::transfer(
                 ctx.accounts.game_treasury.key,
                 ctx.accounts.authority.key,
-                transfer_amount, // Transfer the whole balance
+                transfer_amount,
             ),
             &[
                 ctx.accounts.game_treasury.to_account_info(),
@@ -462,24 +432,24 @@ impl BetCommitment {
 // --- Context Structs ---
 
 #[derive(Accounts)]
-#[instruction()] // Removed authority instruction parameter, added parentheses
+#[instruction()]
 pub struct InitializeGame<'info> {
     #[account(
         init,
         payer = payer,
         space = Game::LEN,
-        // Use the fixed global seed for the singleton game account
         seeds = [GLOBAL_GAME_SEED],
         bump
     )]
     pub game: Account<'info, Game>,
+
     /// CHECK: This is a PDA for holding SOL, no data is accessed or deserialized.
     #[account(
-        mut,
-        seeds = [b"treasury", game.key().as_ref()],
+        seeds = [b"treasury"],
         bump
     )]
-    pub game_treasury: UncheckedAccount<'info>,
+    pub game_treasury: SystemAccount<'info>,
+
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -499,13 +469,13 @@ pub struct CommitBet<'info> {
     )]
     pub bet_commitment: Account<'info, BetCommitment>,
 
-    /// CHECK: This is a PDA for holding SOL, no data is accessed or deserialized.
+    /// CHECK: This is a PDA for holding SOL, player deposits bet into this account
     #[account(
         mut,
-        seeds = [b"treasury", game.key().as_ref()],
+        seeds = [b"treasury"],
         bump = game.treasury_bump
     )]
-    pub game_treasury: UncheckedAccount<'info>,
+    pub game_treasury: SystemAccount<'info>,
 
     #[account(mut)]
     pub player: Signer<'info>,
@@ -546,13 +516,13 @@ pub struct RevealAndClaim<'info> {
     )]
     pub bet_commitment: Account<'info, BetCommitment>,
 
-    /// CHECK: This is a PDA for holding SOL, no data is accessed or deserialized.
+    /// CHECK: This is a PDA for holding SOL, player withdraws payouts from this account
     #[account(
         mut,
-        seeds = [b"treasury", game.key().as_ref()],
+        seeds = [b"treasury", GLOBAL_GAME_SEED],
         bump = game.treasury_bump
     )]
-    pub game_treasury: UncheckedAccount<'info>,
+    pub game_treasury: SystemAccount<'info>,
     #[account(mut)]
     pub player: Signer<'info>,
     /// CHECK: This is authority to reclaim bet
@@ -579,14 +549,12 @@ pub struct ReclaimBetOnTimeout<'info> {
         constraint = bet_commitment.game == game.key() @ GameError::InvalidGameReference,
     )]
     pub bet_commitment: Account<'info, BetCommitment>,
-
-    /// CHECK: This is a PDA for holding SOL, no data is accessed or deserialized.
     #[account(
         mut,
-        seeds = [b"treasury", game.key().as_ref()],
+        seeds = [b"treasury", GLOBAL_GAME_SEED],
         bump = game.treasury_bump
     )]
-    pub game_treasury: UncheckedAccount<'info>,
+    pub game_treasury: SystemAccount<'info>,
 
     #[account(mut)] // Player signs to reclaim and receive rent/funds
     pub player: Signer<'info>,
@@ -608,14 +576,12 @@ pub struct ClaimRemainingTreasury<'info> {
 
     #[account(mut)] // Authority signs to trigger cleanup and receive rent
     pub authority: Signer<'info>,
-
-    /// CHECK: This is a PDA for holding treasury funds. All funds are transferred out as deadline passes host claims any remaining funds as forfeited bet.
     #[account(
         mut,
-        seeds = [b"treasury", game.key().as_ref()],
+        seeds = [b"treasury", GLOBAL_GAME_SEED],
         bump = game.treasury_bump
     )]
-    pub game_treasury: UncheckedAccount<'info>,
+    pub game_treasury: SystemAccount<'info>,
     pub system_program: Program<'info, System>,
     pub clock: Sysvar<'info, Clock>,
 }
@@ -635,12 +601,12 @@ pub struct CleanupGame<'info> {
 
     /// CHECK: This is a PDA for holding SOL, no data is accessed or deserialized.
     #[account(
-        seeds = [b"treasury", game.key().as_ref()],
+        seeds = [b"treasury", GLOBAL_GAME_SEED],
         bump = game.treasury_bump,
         // Ensure treasury is empty before closing the game state
         constraint = game_treasury.lamports() == 0 @ GameError::TreasuryNotEmpty
     )]
-    pub game_treasury: UncheckedAccount<'info>,
+    pub game_treasury: SystemAccount<'info>,
 
     #[account(mut)] // Authority signs to trigger cleanup and receive rent
     pub authority: Signer<'info>,
