@@ -1,7 +1,21 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{keccak, program::invoke_signed, system_instruction};
 
+// Added Clock sysvar
+use anchor_lang::solana_program::sysvar::clock::Clock;
+use std::str::FromStr; // Import FromStr
+
 declare_id!("8JD6JtkBzExbDZkpQBvowXngMr9tDqLwf5sGGjBacwK8");
+
+// --- Global Game Seed ---
+const GLOBAL_GAME_SEED: &[u8] = b"GLOBAL_GAME_SINGLETON";
+
+// --- Hardcoded Authority ---
+const GAME_AUTHORITY_PUBKEY: &str = "8KohbspeoxcieAqgn8zDCBUTyQYyEx1SpfjrghsouscQ";
+
+// --- Hardcoded Timestamps ---
+const SUBMISSION_DEADLINE_TIMESTAMP: i64 = 1745208000; // 21st April 2025 12:00 AM UTC
+const REVEAL_DEADLINE_TIMESTAMP: i64 = 1745812800; // 28th April 2025 12:00 AM UTC
 
 // --- Payout Curve Constants ---
 // Multiplier M(x) = 3.9 * exp(-0.1 * x) + 0.1 where x = result - guess
@@ -11,24 +25,29 @@ const PAYOUT_SCALE: u64 = 1_000_000; // 6 decimal places precision
 // Precomputed lookup table for M(x) * PAYOUT_SCALE for x = 0 to 100
 // Calculated using `round((3.9 * exp(-0.1 * x) + 0.1) * 1_000_000)`
 const PAYOUT_MULTIPLIER_LUT: [u64; 101] = [
-    4000000, 3628864, 3292869, 2988116, 2711062, 2458514, 2227649, 2016017, 1821502, 1642314,
-    1476911, 1323951, 1182270, 1050856, 928820, 815392, 709907, 611791, 520561, 435792, 357123,
-    284187, 216667, 154202, 096471, 043178, 199314, 159676, 123980, 109956, 104466, 101647, 100607,
-    100224, 100083, 100031, 100011, 100004, 100002, 100001, 100000, 100000, 100000, 100000, 100000,
-    100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000,
-    100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000,
-    100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000,
-    100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000,
-    100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000,
+    4_000_000, 3_628_864, 3_292_869, 2_988_116, 2_711_062, 2_458_514, 2_227_649, 2_016_017,
+    1_821_502, 1_642_314, 1_476_911, 1_323_951, 1_182_270, 1_050_856, 928_820, 815_392, 709_907,
+    611_791, 520_561, 435_792, 357_123, 284_187, 216_667, 154_202, 96_471, 43_178, 19_931, 15_967,
+    12_398, 10_995, 10_446, 10_164, 10_060, 10_022, 10_008, 10_003, 10_001, 10_000, 10_000, 10_000,
+    10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000,
+    10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000,
+    10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000,
+    10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000,
+    10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000,
+    10_000,
 ];
 
 #[program]
 pub mod nug_wager_protocol {
     use super::*;
 
-    pub fn initialize_game(ctx: Context<InitializeGame>, authority: Pubkey) -> Result<()> {
+    pub fn initialize_game(ctx: Context<InitializeGame>) -> Result<()> {
         let game = &mut ctx.accounts.game;
-        game.authority = authority;
+
+        // Set the hardcoded authority
+        game.authority = Pubkey::from_str(GAME_AUTHORITY_PUBKEY).map_err(
+            |_| ProgramError::InvalidArgument, // Or a custom error
+        )?;
         game.result = None;
         game.is_open_for_bets = true;
         game.is_open_for_reveals = false;
@@ -36,7 +55,16 @@ pub mod nug_wager_protocol {
         game.total_pot = 0;
         game.bump = ctx.bumps.game;
         game.treasury_bump = ctx.bumps.game_treasury;
-        msg!("Game initialized by authority: {}", authority);
+
+        // Set hardcoded submission deadline
+        game.submission_deadline = Some(SUBMISSION_DEADLINE_TIMESTAMP);
+        game.reveal_deadline = None; // Reveal deadline set when result is submitted
+
+        msg!(
+            "Game initialized with hardcoded authority: {}. Hardcoded Submission deadline: {}",
+            game.authority,
+            SUBMISSION_DEADLINE_TIMESTAMP
+        );
         Ok(())
     }
 
@@ -47,7 +75,15 @@ pub mod nug_wager_protocol {
         require!(game.result.is_none(), GameError::ResultAlreadySubmitted);
         require!(amount > 0, GameError::InvalidBetAmount); // Bet must be positive
 
-        // Transfer funds from player to game treasury PDA
+        // Check submission deadline using Clock sysvar
+        let current_timestamp = Clock::get()?.unix_timestamp;
+        let submission_deadline = game.submission_deadline.ok_or(GameError::DeadlineNotSet)?;
+        require!(
+            current_timestamp < submission_deadline,
+            GameError::SubmissionPeriodExpired
+        );
+
+        // --- Rest of the commit logic ---
         let transfer_instruction = system_instruction::transfer(
             ctx.accounts.player.key,
             ctx.accounts.game_treasury.key,
@@ -60,17 +96,15 @@ pub mod nug_wager_protocol {
                 ctx.accounts.game_treasury.to_account_info(),
                 ctx.accounts.system_program.to_account_info(),
             ],
-            &[], // No signer seeds needed for player's transfer
+            &[],
         )?;
 
-        // Store commitment details
         let bet_commitment = &mut ctx.accounts.bet_commitment;
         bet_commitment.player = *ctx.accounts.player.key;
         bet_commitment.commitment = commitment;
         bet_commitment.game = *game.to_account_info().key;
-        bet_commitment.amount = amount; // Store the bet amount
+        bet_commitment.amount = amount;
 
-        // Update game state
         game.bet_count = game.bet_count.checked_add(1).ok_or(GameError::Overflow)?;
         game.total_pot = game
             .total_pot
@@ -80,7 +114,7 @@ pub mod nug_wager_protocol {
         msg!(
             "Bet committed by player: {} for amount: {}",
             bet_commitment.player,
-            amount
+            amount,
         );
         Ok(())
     }
@@ -88,132 +122,117 @@ pub mod nug_wager_protocol {
     // Authority submits the final result
     pub fn submit_result(ctx: Context<SubmitResult>, result: u8) -> Result<()> {
         let game = &mut ctx.accounts.game;
+
         require!(
             game.authority == *ctx.accounts.authority.key,
             GameError::InvalidAuthority
         );
         require!(game.result.is_none(), GameError::ResultAlreadySubmitted);
-        require!(result <= 100, GameError::InvalidBetValue); // Ensure result is within range
+        require!(result <= 100, GameError::InvalidBetValue);
+
+        // Check if reveal deadline is after submission deadline (sanity check for constants)
+        let submission_deadline = game.submission_deadline.ok_or(GameError::DeadlineNotSet)?;
+        require!(
+            REVEAL_DEADLINE_TIMESTAMP > submission_deadline,
+            GameError::RevealDeadlineMustBeAfterSubmission
+        );
 
         game.result = Some(result);
-        game.is_open_for_bets = false; // Stop new bets
-        game.is_open_for_reveals = true; // Allow reveals
+        game.is_open_for_bets = false;
+        game.is_open_for_reveals = true;
+
+        // Set hardcoded reveal deadline
+        game.reveal_deadline = Some(REVEAL_DEADLINE_TIMESTAMP);
 
         msg!(
-            "Result {} submitted by authority: {}",
+            "Result {} submitted by authority: {}. Hardcoded Reveal deadline: {}",
             result,
-            game.authority
+            game.authority,
+            REVEAL_DEADLINE_TIMESTAMP
         );
         Ok(())
     }
 
-    // Player reveals their bet and salt
-    pub fn reveal_bet(ctx: Context<RevealBet>, bet_value: u8, salt: u64) -> Result<()> {
+    // Player reveals their bet, salt and claims reward in one step
+    pub fn reveal_and_claim(ctx: Context<RevealAndClaim>, bet_value: u8, salt: u64) -> Result<()> {
         let game = &ctx.accounts.game;
-        require!(game.is_open_for_reveals, GameError::RevealClosed);
-        require!(game.result.is_some(), GameError::ResultNotSubmitted);
-        require!(bet_value <= 100, GameError::InvalidBetValue); // Ensure bet is within range
-
         let commitment_account = &ctx.accounts.bet_commitment;
         let player = *ctx.accounts.player.key;
+
+        // --- Reveal Logic --- //
+        require!(game.is_open_for_reveals, GameError::RevealPeriodClosed);
+        require!(game.result.is_some(), GameError::ResultNotSubmitted);
+        require!(bet_value <= 100, GameError::InvalidBetValue);
+
+        // Check reveal deadline using Clock sysvar
+        let current_timestamp = Clock::get()?.unix_timestamp;
+        let reveal_deadline = game.reveal_deadline.ok_or(GameError::DeadlineNotSet)?;
         require!(
-            commitment_account.player == player,
-            GameError::InvalidPlayer
+            current_timestamp < reveal_deadline,
+            GameError::RevealPeriodExpired
         );
 
-        // Verify the commitment hash
+        require!(
+            commitment_account.player == player,
+            GameError::InvalidPlayerForCommitment
+        );
+        require!(
+            commitment_account.game == game.key(),
+            GameError::InvalidGameReference
+        );
+
         let mut hasher = keccak::Hasher::default();
         hasher.hash(&bet_value.to_le_bytes());
         hasher.hash(&salt.to_le_bytes());
         let calculated_commitment = hasher.result().to_bytes();
-
         require!(
             calculated_commitment == commitment_account.commitment,
             GameError::CommitmentMismatch
         );
 
-        // Store the revealed bet information
-        let revealed_bet = &mut ctx.accounts.revealed_bet;
-        revealed_bet.player = player;
-        revealed_bet.bet_value = bet_value;
-        revealed_bet.salt = salt;
-        revealed_bet.amount = commitment_account.amount; // Copy bet amount
-        revealed_bet.claimed = false;
-        revealed_bet.game = *game.to_account_info().key;
-
         msg!(
-            "Bet revealed by player: {} (Bet: {}, Amount: {})",
+            "Bet reveal verified for player: {} (Bet: {}, Salt: {}, Amount: {})",
             player,
             bet_value,
-            revealed_bet.amount
+            salt,
+            commitment_account.amount
         );
 
-        // Optional: Close the commitment account here if desired to reclaim rent
-        // ... (Closing logic would go here) ...
-
-        Ok(())
-    }
-
-    // Player claims their reward based on the payout curve
-    pub fn claim_reward(ctx: Context<ClaimReward>) -> Result<()> {
-        let game = &ctx.accounts.game;
-        let revealed_bet = &mut ctx.accounts.revealed_bet;
-
-        require!(
-            revealed_bet.player == *ctx.accounts.player.key,
-            GameError::InvalidPlayer
-        );
-        require!(!revealed_bet.claimed, GameError::AlreadyClaimed);
-        require!(game.result.is_some(), GameError::ResultNotSubmitted); // Ensure result exists
-
+        // --- Claim Logic --- //
         let true_result = game.result.unwrap();
-        let guessed_value = revealed_bet.bet_value;
-        let bet_amount = revealed_bet.amount;
+        let guessed_value = bet_value;
+        let bet_amount = commitment_account.amount;
 
         let mut payout_amount: u64 = 0;
-
-        // Payout only if guess <= result (n >= g)
         if guessed_value <= true_result {
             let difference = (true_result - guessed_value) as usize;
-
-            // Ensure difference is within LUT bounds (should be due to 0-100 range)
             if difference < PAYOUT_MULTIPLIER_LUT.len() {
                 let scaled_multiplier = PAYOUT_MULTIPLIER_LUT[difference];
-
-                // Calculate payout: (bet_amount * scaled_multiplier) / scale
-                // Use u128 for intermediate calculation to prevent overflow
                 payout_amount = ((bet_amount as u128 * scaled_multiplier as u128)
                     / (PAYOUT_SCALE as u128)) as u64;
-
                 msg!(
                     "Player {} qualifies for payout. Diff: {}, Multiplier (scaled): {}, Bet: {}, Payout: {}",
-                    revealed_bet.player, difference, scaled_multiplier, bet_amount, payout_amount
+                    player, difference, scaled_multiplier, bet_amount, payout_amount
                 );
             } else {
-                // This case should technically not be reachable if inputs are validated 0-100
-                msg!("Error: Difference index out of bounds.");
-                // Decide how to handle: error out or just payout 0? Let's payout 0.
-                payout_amount = 0;
+                msg!("Error: Difference index out of bounds. Payout set to 0.");
             }
         } else {
             msg!(
                 "Player {} does not qualify for payout (Guess {} > Result {})",
-                revealed_bet.player,
+                player,
                 guessed_value,
                 true_result
             );
-            payout_amount = 0; // Explicitly set to 0 if guess > result
         }
 
         if payout_amount > 0 {
-            // Check if treasury has enough funds
             let treasury_balance = ctx.accounts.game_treasury.to_account_info().lamports();
             require!(
                 treasury_balance >= payout_amount,
                 GameError::InsufficientTreasuryFunds
             );
 
-            // Transfer payout from treasury PDA to player
             let game_key = game.key();
             let seeds = &[
                 b"treasury".as_ref(),
@@ -221,13 +240,11 @@ pub mod nug_wager_protocol {
                 &[game.treasury_bump],
             ];
             let signer_seeds = &[&seeds[..]];
-
             let transfer_instruction = system_instruction::transfer(
                 ctx.accounts.game_treasury.key,
                 ctx.accounts.player.key,
                 payout_amount,
             );
-
             invoke_signed(
                 &transfer_instruction,
                 &[
@@ -237,15 +254,150 @@ pub mod nug_wager_protocol {
                 ],
                 signer_seeds,
             )?;
-
-            msg!(
-                "Transferred payout {} to player {}",
-                payout_amount,
-                revealed_bet.player
-            );
+            msg!("Transferred payout {} to player {}", payout_amount, player);
         }
 
-        revealed_bet.claimed = true;
+        msg!(
+            "Closing commitment account for player {} and returning rent.",
+            player
+        );
+        Ok(())
+    }
+
+    // --- NEW TIMEOUT INSTRUCTIONS ---
+
+    // Player reclaims their original bet if authority missed submission deadline
+    pub fn reclaim_bet_on_timeout(ctx: Context<ReclaimBetOnTimeout>) -> Result<()> {
+        let game = &ctx.accounts.game;
+        let commitment = &ctx.accounts.bet_commitment;
+        let player = *ctx.accounts.player.key;
+
+        require!(
+            commitment.player == player,
+            GameError::InvalidPlayerForCommitment
+        );
+        require!(
+            commitment.game == game.key(),
+            GameError::InvalidGameReference
+        );
+        require!(
+            game.result.is_none(),
+            GameError::ResultAlreadySubmittedCannotReclaim
+        );
+
+        let current_timestamp = Clock::get()?.unix_timestamp;
+        let submission_deadline = game.submission_deadline.ok_or(GameError::DeadlineNotSet)?;
+        require!(
+            current_timestamp >= submission_deadline,
+            GameError::SubmissionDeadlineNotReached
+        );
+
+        let reclaim_amount = commitment.amount;
+        let treasury_balance = ctx.accounts.game_treasury.to_account_info().lamports();
+        require!(
+            treasury_balance >= reclaim_amount,
+            GameError::InsufficientTreasuryForReclaim
+        );
+
+        let game_key = game.key();
+        let seeds = &[
+            b"treasury".as_ref(),
+            game_key.as_ref(),
+            &[game.treasury_bump],
+        ];
+        let signer_seeds = &[&seeds[..]];
+        invoke_signed(
+            &system_instruction::transfer(
+                ctx.accounts.game_treasury.key,
+                ctx.accounts.player.key,
+                reclaim_amount,
+            ),
+            &[
+                ctx.accounts.game_treasury.to_account_info(),
+                ctx.accounts.player.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+            signer_seeds,
+        )?;
+
+        msg!(
+            "Authority missed deadline. Reclaimed {} lamports for player {}.",
+            reclaim_amount,
+            player
+        );
+        msg!("Closing commitment account and returning rent to player.");
+        Ok(())
+    }
+
+    // Authority claims the entire remaining treasury balance after reveal deadline
+    pub fn claim_remaining_treasury(ctx: Context<ClaimRemainingTreasury>) -> Result<()> {
+        let game = &ctx.accounts.game;
+        let authority = *ctx.accounts.authority.key;
+
+        require!(game.authority == authority, GameError::InvalidAuthority);
+
+        let current_timestamp = Clock::get()?.unix_timestamp;
+        let reveal_deadline = game.reveal_deadline.ok_or(GameError::DeadlineNotSet)?;
+        require!(
+            current_timestamp >= reveal_deadline,
+            GameError::RevealDeadlineNotReached
+        );
+
+        // Get the amount to transfer (entire treasury balance)
+        let transfer_amount = ctx.accounts.game_treasury.to_account_info().lamports();
+
+        require!(
+            transfer_amount > 0,
+            GameError::TreasuryIsEmpty // Need a new error or reuse InsufficientTreasury
+        );
+
+        let game_key = game.key();
+        let seeds = &[
+            b"treasury".as_ref(),
+            game_key.as_ref(),
+            &[game.treasury_bump],
+        ];
+        let signer_seeds = &[&seeds[..]];
+        invoke_signed(
+            &system_instruction::transfer(
+                ctx.accounts.game_treasury.key,
+                ctx.accounts.authority.key,
+                transfer_amount, // Transfer the whole balance
+            ),
+            &[
+                ctx.accounts.game_treasury.to_account_info(),
+                ctx.accounts.authority.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+            signer_seeds,
+        )?;
+
+        msg!(
+            "Reveal deadline passed. Claimed remaining {} lamports from treasury for authority {}.",
+            transfer_amount,
+            authority
+        );
+        Ok(())
+    }
+
+    // Authority cleans up the game account after the reveal deadline
+    pub fn cleanup_game(ctx: Context<CleanupGame>) -> Result<()> {
+        let game = &ctx.accounts.game;
+
+        // Check reveal deadline using Clock sysvar
+        let current_timestamp = Clock::get()?.unix_timestamp;
+        let reveal_deadline = game.reveal_deadline.ok_or(GameError::DeadlineNotSet)?;
+        require!(
+            current_timestamp >= reveal_deadline,
+            GameError::CleanupNotAllowedYet
+        );
+
+        // Treasury balance check is done via constraints
+        msg!(
+            "Reveal deadline passed and treasury is empty. Cleaning up game account {} and returning rent to authority {}.",
+            game.key(),
+            ctx.accounts.authority.key()
+        );
         Ok(())
     }
 }
@@ -260,9 +412,11 @@ pub struct Game {
     pub is_open_for_bets: bool,
     pub is_open_for_reveals: bool,
     pub bet_count: u64,
-    pub total_pot: u64,    // Total lamports wagered in the game
-    pub bump: u8,          // Bump for the Game PDA itself (if seeded)
-    pub treasury_bump: u8, // Bump for the Treasury PDA
+    pub total_pot: u64,
+    pub bump: u8,
+    pub treasury_bump: u8,
+    pub submission_deadline: Option<i64>, // Unix timestamp
+    pub reveal_deadline: Option<i64>,     // Unix timestamp
 }
 
 const DISCRIMINATOR_LENGTH: usize = 8;
@@ -271,7 +425,8 @@ const OPTION_FLAG_LENGTH: usize = 1;
 const U8_LENGTH: usize = 1;
 const BOOL_LENGTH: usize = 1;
 const U64_LENGTH: usize = 8;
-const COMMITMENT_LENGTH: usize = 32; // Keccak256 hash
+const I64_LENGTH: usize = 8; // For UnixTimestamp (i64)
+const COMMITMENT_LENGTH: usize = 32;
 
 impl Game {
     const LEN: usize = DISCRIMINATOR_LENGTH
@@ -282,16 +437,18 @@ impl Game {
         + U64_LENGTH        // bet_count
         + U64_LENGTH        // total_pot
         + U8_LENGTH         // bump
-        + U8_LENGTH; // treasury_bump
+        + U8_LENGTH         // treasury_bump
+        + OPTION_FLAG_LENGTH + I64_LENGTH // submission_deadline
+        + OPTION_FLAG_LENGTH + I64_LENGTH; // reveal_deadline
 }
 
 #[account]
 #[derive(Default)]
 pub struct BetCommitment {
     pub player: Pubkey,
-    pub commitment: [u8; 32], // Hash(bet_value, salt)
-    pub game: Pubkey,         // Reference to the game
-    pub amount: u64,          // Amount wagered by the player
+    pub commitment: [u8; 32],
+    pub game: Pubkey,
+    pub amount: u64,
 }
 
 impl BetCommitment {
@@ -302,41 +459,21 @@ impl BetCommitment {
         + U64_LENGTH; // amount
 }
 
-#[account]
-#[derive(Default)]
-pub struct RevealedBet {
-    pub player: Pubkey,
-    pub bet_value: u8,
-    pub salt: u64,
-    // pub is_winner: bool, // Removed, payout logic determines winner
-    pub amount: u64, // Amount wagered by the player
-    pub claimed: bool,
-    pub game: Pubkey, // Reference to the game
-}
-
-impl RevealedBet {
-    const LEN: usize = DISCRIMINATOR_LENGTH
-        + PUBKEY_LENGTH     // player
-        + U8_LENGTH         // bet_value
-        + U64_LENGTH        // salt
-        + U64_LENGTH        // amount (replaced is_winner)
-        + BOOL_LENGTH       // claimed
-        + PUBKEY_LENGTH; // game
-}
-
 // --- Context Structs ---
 
 #[derive(Accounts)]
+#[instruction()] // Removed authority instruction parameter, added parentheses
 pub struct InitializeGame<'info> {
     #[account(
         init,
         payer = payer,
         space = Game::LEN,
-        seeds = [b"game", payer.key().as_ref()], // Seed with initializer/authority
+        // Use the fixed global seed for the singleton game account
+        seeds = [GLOBAL_GAME_SEED],
         bump
     )]
     pub game: Account<'info, Game>,
-    /// CHECK: The treasury PDA is initialized implicitly by the system program during the first transfer to it. We just need its address defined by seeds.
+    /// CHECK: This is a PDA for holding SOL, no data is accessed or deserialized.
     #[account(
         mut,
         seeds = [b"treasury", game.key().as_ref()],
@@ -344,15 +481,14 @@ pub struct InitializeGame<'info> {
     )]
     pub game_treasury: UncheckedAccount<'info>,
     #[account(mut)]
-    pub payer: Signer<'info>, // The authority usually pays for initialization
+    pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-#[instruction(commitment: [u8; 32], amount: u64)] // Make amount accessible for seed calc if needed later
+#[instruction(commitment: [u8; 32], amount: u64)]
 pub struct CommitBet<'info> {
-    // No longer needs authority check, players commit freely
-    #[account(mut)]
+    #[account(mut, seeds = [GLOBAL_GAME_SEED], bump = game.bump)]
     pub game: Account<'info, Game>,
     #[account(
         init,
@@ -362,88 +498,155 @@ pub struct CommitBet<'info> {
         bump
     )]
     pub bet_commitment: Account<'info, BetCommitment>,
-    /// CHECK: Treasury PDA needs to be mutable to receive funds. Address validated by seeds.
+
+    /// CHECK: This is a PDA for holding SOL, no data is accessed or deserialized.
     #[account(
         mut,
         seeds = [b"treasury", game.key().as_ref()],
-        bump = game.treasury_bump // Use bump stored in game account
+        bump = game.treasury_bump
+    )]
+    pub game_treasury: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub player: Signer<'info>,
+    pub system_program: Program<'info, System>,
+    pub clock: Sysvar<'info, Clock>,
+}
+
+#[derive(Accounts)]
+#[instruction(result: u8)] // Removed timestamp instruction parameter
+pub struct SubmitResult<'info> {
+    #[account(
+        mut,
+        seeds = [GLOBAL_GAME_SEED],
+        bump = game.bump,
+        has_one = authority @ GameError::InvalidAuthority
+    )]
+    pub game: Account<'info, Game>,
+    pub authority: Signer<'info>,
+    pub clock: Sysvar<'info, Clock>,
+}
+
+#[derive(Accounts)]
+#[instruction(bet_value: u8, salt: u64)]
+pub struct RevealAndClaim<'info> {
+    #[account(
+        seeds = [GLOBAL_GAME_SEED],
+        bump = game.bump,
+        has_one = authority @ GameError::InvalidAuthority
+    )]
+    pub game: Account<'info, Game>,
+    #[account(
+        mut,
+        close = player,
+        seeds = [b"commitment", game.key().as_ref(), player.key().as_ref()],
+        bump,
+        constraint = bet_commitment.player == player.key() @ GameError::InvalidPlayerForCommitment,
+        constraint = bet_commitment.game == game.key() @ GameError::InvalidGameReference
+    )]
+    pub bet_commitment: Account<'info, BetCommitment>,
+
+    /// CHECK: This is a PDA for holding SOL, no data is accessed or deserialized.
+    #[account(
+        mut,
+        seeds = [b"treasury", game.key().as_ref()],
+        bump = game.treasury_bump
     )]
     pub game_treasury: UncheckedAccount<'info>,
     #[account(mut)]
     pub player: Signer<'info>,
+    /// CHECK: This is authority to reclaim bet
+    #[account(mut)] // Authority needed for game PDA derivation check via has_one
+    pub authority: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
+    pub clock: Sysvar<'info, Clock>,
 }
 
+// --- NEW CONTEXTS FOR TIMEOUTS ---
+
 #[derive(Accounts)]
-pub struct SubmitResult<'info> {
-    #[account(mut, has_one = authority @ GameError::InvalidAuthority)]
+pub struct ReclaimBetOnTimeout<'info> {
+    // Game account needed to check deadline and authority for seeds
+    #[account(seeds = [GLOBAL_GAME_SEED], bump = game.bump)]
     pub game: Account<'info, Game>,
-    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        close = player, // Return rent to player
+        seeds = [b"commitment", game.key().as_ref(), player.key().as_ref()],
+        bump,
+        constraint = bet_commitment.player == player.key() @ GameError::InvalidPlayerForCommitment,
+        constraint = bet_commitment.game == game.key() @ GameError::InvalidGameReference,
+    )]
+    pub bet_commitment: Account<'info, BetCommitment>,
+
+    /// CHECK: This is a PDA for holding SOL, no data is accessed or deserialized.
+    #[account(
+        mut,
+        seeds = [b"treasury", game.key().as_ref()],
+        bump = game.treasury_bump
+    )]
+    pub game_treasury: UncheckedAccount<'info>,
+
+    #[account(mut)] // Player signs to reclaim and receive rent/funds
+    pub player: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+    pub clock: Sysvar<'info, Clock>,
 }
 
 #[derive(Accounts)]
-#[instruction(bet_value: u8, salt: u64)] // Make params accessible for seed calc if needed
-pub struct RevealBet<'info> {
+pub struct ClaimRemainingTreasury<'info> {
     #[account(
-        // No mut needed on game unless we modify it during reveal
-        seeds = [b"game", game.authority.as_ref()], // Reconstruct seeds if needed
+        mut,
+        close = authority, // Return rent to the authority
+        has_one = authority @ GameError::InvalidAuthority,
+        seeds = [GLOBAL_GAME_SEED],
         bump = game.bump
     )]
     pub game: Account<'info, Game>,
 
-    #[account(
-        // No mut needed unless closing
-        // Close constraint removed for now
-        constraint = bet_commitment.player == player.key() @ GameError::InvalidPlayer,
-        constraint = bet_commitment.game == game.key() @ GameError::InvalidGameReference,
-        seeds = [b"commitment", game.key().as_ref(), player.key().as_ref()],
-        bump,
-    )]
-    pub bet_commitment: Account<'info, BetCommitment>,
+    #[account(mut)] // Authority signs to trigger cleanup and receive rent
+    pub authority: Signer<'info>,
 
-    #[account(
-        init, // Initialize the revealed bet account upon successful reveal
-        payer = player,
-        space = RevealedBet::LEN,
-        seeds = [b"revealed", game.key().as_ref(), player.key().as_ref()],
-        bump
-    )]
-    pub revealed_bet: Account<'info, RevealedBet>,
-
-    #[account(mut)]
-    pub player: Signer<'info>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct ClaimReward<'info> {
-    #[account(
-        // No mut needed on game unless we modify it during claim (like decrementing pot)
-        seeds = [b"game", game.authority.as_ref()], // Use authority to find game PDA
-        bump = game.bump,
-    )]
-    pub game: Account<'info, Game>,
-
-    #[account(
-        mut, // Need mut to set claimed = true
-        constraint = revealed_bet.player == player.key() @ GameError::InvalidPlayer,
-        constraint = revealed_bet.game == game.key() @ GameError::InvalidGameReference,
-        seeds = [b"revealed", game.key().as_ref(), player.key().as_ref()],
-        bump
-    )]
-    pub revealed_bet: Account<'info, RevealedBet>,
-
-    /// CHECK: Treasury PDA needs to be mutable to send funds. Address validated by seeds.
+    /// CHECK: This is a PDA for holding treasury funds. All funds are transferred out as deadline passes host claims any remaining funds as forfeited bet.
     #[account(
         mut,
         seeds = [b"treasury", game.key().as_ref()],
-        bump = game.treasury_bump // Use bump stored in game account
+        bump = game.treasury_bump
+    )]
+    pub game_treasury: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+    pub clock: Sysvar<'info, Clock>,
+}
+
+// --- NEW CONTEXT FOR CLEANUP ---
+
+#[derive(Accounts)]
+pub struct CleanupGame<'info> {
+    #[account(
+        mut,
+        close = authority, // Return rent to the authority
+        has_one = authority @ GameError::InvalidAuthority,
+        seeds = [GLOBAL_GAME_SEED],
+        bump = game.bump
+    )]
+    pub game: Account<'info, Game>,
+
+    /// CHECK: This is a PDA for holding SOL, no data is accessed or deserialized.
+    #[account(
+        seeds = [b"treasury", game.key().as_ref()],
+        bump = game.treasury_bump,
+        // Ensure treasury is empty before closing the game state
+        constraint = game_treasury.lamports() == 0 @ GameError::TreasuryNotEmpty
     )]
     pub game_treasury: UncheckedAccount<'info>,
 
-    #[account(mut)] // Player needs to sign to claim and receive funds
-    pub player: Signer<'info>,
-    pub system_program: Program<'info, System>, // Needed for CPI transfer
+    #[account(mut)] // Authority signs to trigger cleanup and receive rent
+    pub authority: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+    pub clock: Sysvar<'info, Clock>,
 }
 
 // --- Error Enum ---
@@ -458,18 +661,14 @@ pub enum GameError {
     InvalidAuthority,
     #[msg("Bet value must be between 0 and 100.")]
     InvalidBetValue,
-    #[msg("Cannot reveal bets until the result is submitted.")]
-    RevealClosed,
-    #[msg("The result has not been submitted yet.")]
+    #[msg("Cannot reveal/claim until the result is submitted.")]
     ResultNotSubmitted,
+    #[msg("Reveal period is closed (either generally or via deadline passed).")]
+    RevealPeriodClosed,
     #[msg("The revealed bet and salt do not match the commitment hash.")]
     CommitmentMismatch,
-    #[msg("The signer is not the player associated with this bet.")]
-    InvalidPlayer,
-    // #[msg("This player is not a winner.")] // Removed, payout logic handles this
-    // NotAWinner,
-    #[msg("The reward has already been claimed.")]
-    AlreadyClaimed,
+    #[msg("The signer is not the player associated with this commitment.")]
+    InvalidPlayerForCommitment,
     #[msg("Account references the wrong game.")]
     InvalidGameReference,
     #[msg("Calculation overflow.")]
@@ -478,4 +677,30 @@ pub enum GameError {
     InvalidBetAmount,
     #[msg("Insufficient funds in the game treasury for payout.")]
     InsufficientTreasuryFunds,
+
+    // New Errors for Timeouts
+    #[msg("Betting/submission period has expired.")]
+    SubmissionPeriodExpired,
+    #[msg("Reveal/claim period has expired.")]
+    RevealPeriodExpired,
+    #[msg("Submission deadline has not been reached yet.")]
+    SubmissionDeadlineNotReached,
+    #[msg("Reveal deadline has not been reached yet.")]
+    RevealDeadlineNotReached,
+    #[msg("Result already submitted, cannot reclaim bet via timeout.")]
+    ResultAlreadySubmittedCannotReclaim,
+    #[msg("Deadline timestamp not set in game account, cannot check timeout.")]
+    DeadlineNotSet,
+    #[msg("Insufficient funds in treasury to reclaim bet on timeout.")]
+    InsufficientTreasuryForReclaim,
+    #[msg("Insufficient funds in treasury to claim forfeited bet on timeout.")]
+    InsufficientTreasuryForForfeit,
+    #[msg("Treasury is empty, nothing to claim.")]
+    TreasuryIsEmpty,
+    #[msg("Reveal deadline must be after the submission deadline.")]
+    RevealDeadlineMustBeAfterSubmission,
+    #[msg("Cleanup cannot be performed until the reveal deadline has passed.")]
+    CleanupNotAllowedYet,
+    #[msg("Game treasury must be empty before cleaning up the game account.")]
+    TreasuryNotEmpty,
 }
