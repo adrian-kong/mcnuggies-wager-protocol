@@ -9,7 +9,7 @@ declare_id!("8JD6JtkBzExbDZkpQBvowXngMr9tDqLwf5sGGjBacwK8");
 const GLOBAL_GAME_SEED: &[u8] = b"ADRIAN_NUGGETS_MINECRAFT_MOVIE";
 const GAME_AUTHORITY_PUBKEY: &str = "JDUcdJdTH8j352LvXhWbDKPb7WzTWH8VkfwXeBX2NT7U";
 const SUBMISSION_DEADLINE_TIMESTAMP: i64 = 1745208000; // 21st April 2025 4 AM GMT (or 2 PM AEDT)
-const REVEAL_DEADLINE_TIMESTAMP: i64 = 0; // 28th April 2025 4 AM GMT (or 2 PM AEDT)
+const REVEAL_DEADLINE_TIMESTAMP: i64 = 1745812800; // 28th April 2025 4 AM GMT (or 2 PM AEDT)
 
 // --- Payout Curve Constants ---
 // Multiplier M(x) = 3.9 * exp(-0.1 * x) + 0.1 where x = result - guess
@@ -136,10 +136,11 @@ pub mod nug_wager_protocol {
             ctx.accounts.clock.unix_timestamp < SUBMISSION_DEADLINE_TIMESTAMP,
             GameError::SubmissionPeriodExpired
         );
-        // require!(
-        //     REVEAL_DEADLINE_TIMESTAMP > submission_deadline,
-        //     GameError::RevealDeadlineMustBeAfterSubmission
-        // );
+        // so Adrian can't just put a reveal deadline before the submission deadline to rug everyone
+        require!(
+            REVEAL_DEADLINE_TIMESTAMP > submission_deadline,
+            GameError::RevealDeadlineMustBeAfterSubmission
+        );
 
         game.result = Some(result);
         game.is_open_for_bets = false;
