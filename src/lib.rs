@@ -9,7 +9,7 @@ declare_id!("8JD6JtkBzExbDZkpQBvowXngMr9tDqLwf5sGGjBacwK8");
 const GLOBAL_GAME_SEED: &[u8] = b"ADRIAN_NUGGETS_MINECRAFT_MOVIE";
 const GAME_AUTHORITY_PUBKEY: &str = "JDUcdJdTH8j352LvXhWbDKPb7WzTWH8VkfwXeBX2NT7U";
 const SUBMISSION_DEADLINE_TIMESTAMP: i64 = 1745208000; // 21st April 2025 4 AM GMT (or 2 PM AEDT)
-const REVEAL_DEADLINE_TIMESTAMP: i64 = 1745812800; // 28th April 2025 4 AM GMT (or 2 PM AEDT)
+const REVEAL_DEADLINE_TIMESTAMP: i64 = 0; // 28th April 2025 4 AM GMT (or 2 PM AEDT)
 
 // --- Payout Curve Constants ---
 // Multiplier M(x) = 3.9 * exp(-0.1 * x) + 0.1 where x = result - guess
@@ -17,18 +17,19 @@ const REVEAL_DEADLINE_TIMESTAMP: i64 = 1745812800; // 28th April 2025 4 AM GMT (
 const PAYOUT_SCALE: u64 = 1_000_000; // 6 decimal places precision
 
 // Precomputed lookup table for M(x) * PAYOUT_SCALE for x = 0 to 100
-// Calculated using `round((3.9 * exp(-0.1 * x) + 0.1) * 1_000_000)`
+// Calculated using `round((3.9 * exp(-0.14 * x) + 0.1) * 1_000_000)`
 const PAYOUT_MULTIPLIER_LUT: [u64; 101] = [
-    4_000_000, 3_628_864, 3_292_869, 2_988_116, 2_711_062, 2_458_514, 2_227_649, 2_016_017,
-    1_821_502, 1_642_314, 1_476_911, 1_323_951, 1_182_270, 1_050_856, 928_820, 815_392, 709_907,
-    611_791, 520_561, 435_792, 357_123, 284_187, 216_667, 154_202, 96_471, 43_178, 19_931, 15_967,
-    12_398, 10_995, 10_446, 10_164, 10_060, 10_022, 10_008, 10_003, 10_001, 10_000, 10_000, 10_000,
-    10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000,
-    10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000,
-    10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000,
-    10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000,
-    10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000,
-    10_000,
+    4_000_000, 3_490_497, 3_047_557, 2_662_483, 2_327_715, 2_036_683, 1_783_671, 1_563_713,
+    1_372_491, 1_206_251, 1_061_728, 936_086, 826_859, 731_900, 649_348, 577_580, 515_188, 460_947,
+    413_792, 372_798, 337_159, 306_176, 279_241, 255_825, 235_468, 217_770, 202_384, 189_008,
+    177_380, 167_271, 158_483, 150_842, 144_200, 138_426, 133_406, 129_042, 125_248, 121_949,
+    119_082, 116_589, 114_422, 112_538, 110_900, 109_476, 108_238, 107_162, 106_226, 105_413,
+    104_705, 104_091, 103_556, 103_092, 102_688, 102_337, 102_031, 101_766, 101_535, 101_335,
+    101_160, 101_009, 100_877, 100_762, 100_663, 100_576, 100_501, 100_435, 100_379, 100_329,
+    100_286, 100_249, 100_216, 100_188, 100_163, 100_142, 100_124, 100_107, 100_093, 100_081,
+    100_071, 100_061, 100_053, 100_046, 100_040, 100_035, 100_030, 100_026, 100_023, 100_020,
+    100_017, 100_015, 100_013, 100_011, 100_010, 100_009, 100_008, 100_007, 100_006, 100_005,
+    100_004, 100_004, 100_003,
 ];
 
 #[program]
@@ -77,7 +78,7 @@ pub mod nug_wager_protocol {
         );
 
         // Check submission deadline using Clock sysvar
-        let current_timestamp = Clock::get()?.unix_timestamp;
+        let current_timestamp = ctx.accounts.clock.unix_timestamp;
         let submission_deadline = game.submission_deadline.ok_or(GameError::DeadlineNotSet)?;
         require!(
             current_timestamp < submission_deadline,
@@ -132,9 +133,13 @@ pub mod nug_wager_protocol {
         // Check if reveal deadline is after submission deadline (sanity check for constants)
         let submission_deadline = game.submission_deadline.ok_or(GameError::DeadlineNotSet)?;
         require!(
-            REVEAL_DEADLINE_TIMESTAMP > submission_deadline,
-            GameError::RevealDeadlineMustBeAfterSubmission
+            ctx.accounts.clock.unix_timestamp < SUBMISSION_DEADLINE_TIMESTAMP,
+            GameError::SubmissionPeriodExpired
         );
+        // require!(
+        //     REVEAL_DEADLINE_TIMESTAMP > submission_deadline,
+        //     GameError::RevealDeadlineMustBeAfterSubmission
+        // );
 
         game.result = Some(result);
         game.is_open_for_bets = false;
@@ -164,8 +169,7 @@ pub mod nug_wager_protocol {
         };
         require!(bet_value <= 100, GameError::InvalidBetValue);
 
-        // Check reveal deadline using Clock sysvar
-        let current_timestamp = Clock::get()?.unix_timestamp;
+        let current_timestamp = ctx.accounts.clock.unix_timestamp;
         let reveal_deadline = game.reveal_deadline.ok_or(GameError::DeadlineNotSet)?;
         require!(
             current_timestamp < reveal_deadline,
@@ -282,7 +286,7 @@ pub mod nug_wager_protocol {
             GameError::ResultAlreadySubmittedCannotReclaim
         );
 
-        let current_timestamp = Clock::get()?.unix_timestamp;
+        let current_timestamp = ctx.accounts.clock.unix_timestamp;
         let submission_deadline = game.submission_deadline.ok_or(GameError::DeadlineNotSet)?;
         require!(
             current_timestamp >= submission_deadline,
@@ -407,6 +411,7 @@ pub struct Game {
     pub total_pot: u64,
     pub bump: u8,
     pub treasury_bump: u8,
+    // we'll just store this on chain so people can see easily i guess?
     pub submission_deadline: Option<i64>, // Unix timestamp
     pub reveal_deadline: Option<i64>,     // Unix timestamp
 }
