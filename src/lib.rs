@@ -385,6 +385,7 @@ pub mod nug_wager_protocol {
 pub struct Game {
     pub authority: Pubkey,
     pub result: Option<u8>,
+    // we should use enums but im too far gone
     pub is_open_for_bets: bool,
     pub is_open_for_reveals: bool,
     pub bet_count: u64,
@@ -504,7 +505,7 @@ pub struct SubmitResult<'info> {
         seeds = [GLOBAL_GAME_SEED],
         bump = game.bump,
         has_one = authority @ GameError::InvalidAuthority,
-        // constraint = game.is_open_for_reveals @ GameError::RevealPeriodClosed,
+        constraint = game.is_open_for_bets @ GameError::RevealPeriodClosed,
         constraint = game.result.is_none() @ GameError::ResultAlreadySubmitted,
         constraint = game.submission_deadline.is_some() @ GameError::DeadlineNotSet,
         constraint = Some(clock.unix_timestamp) < game.reveal_deadline @ GameError::RevealDeadlineNotReached,
