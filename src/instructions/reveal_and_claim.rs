@@ -88,11 +88,12 @@ pub fn reveal_and_claim(ctx: Context<RevealAndClaim>, bet_value: u8, salt: u64) 
     if payout_amount > host_liquidity {
         // host liquidity insufficient, player can use [`withdraw_unpaid_bet`] to reclaim their bet later if host does not fund...
         commitment_account.attempted_reveal = true;
+        commitment_account.is_claimed = false;
         // set the final claim deadline so player can reclaim their initial stake later if host does not fund
         // we don't handle potentially splittng treasury amongst players as thats a bit complicated. lets assume im at least that trustworthy
         game.final_claim_deadline = Some(FINAL_CLAIM_DEADLINE_TIMESTAMP);
         msg!("Host liquidity insufficient for payout. Player can use withdraw_unpaid_bet to reclaim their bet.");
-        return Err(GameError::InsufficientHostLiquidity.into());
+        return Ok(());
     }
     // updating total_player_pot to reflect the payout, decrementing initial stake so remaining comes out of host's liquidity
     game.total_player_pot = game
@@ -100,6 +101,7 @@ pub fn reveal_and_claim(ctx: Context<RevealAndClaim>, bet_value: u8, salt: u64) 
         .checked_sub(bet_amount)
         .ok_or(GameError::TotalPayoutPotDesynced)?;
 
+    commitment_account.is_claimed = true;
     // perform payout
     msg!(
         "Implicit host liquidity sufficient ({} >= {}). Proceeding with transfer.",

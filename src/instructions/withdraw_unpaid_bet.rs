@@ -5,7 +5,7 @@ use anchor_lang::prelude::*;
 
 pub fn withdraw_unpaid_bet(ctx: Context<WithdrawUnpaidBet>) -> Result<()> {
     let game = &mut ctx.accounts.game;
-    let commitment = &ctx.accounts.bet_commitment;
+    let commitment = &mut ctx.accounts.bet_commitment;
     let player = *ctx.accounts.player.key;
 
     let reclaim_amount = commitment.amount;
@@ -21,6 +21,8 @@ pub fn withdraw_unpaid_bet(ctx: Context<WithdrawUnpaidBet>) -> Result<()> {
         .total_player_pot
         .checked_sub(reclaim_amount)
         .ok_or(GameError::TotalPayoutPotDesynced)?;
+
+    commitment.is_claimed = true;
 
     // Transfer original bet back to player
     withdraw_from_treasury_to_player(

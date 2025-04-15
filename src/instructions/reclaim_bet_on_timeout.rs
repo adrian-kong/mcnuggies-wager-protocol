@@ -5,7 +5,7 @@ use anchor_lang::prelude::*;
 
 pub fn reclaim_bet_on_timeout(ctx: Context<ReclaimBetOnTimeout>) -> Result<()> {
     let game = &mut ctx.accounts.game;
-    let commitment = &ctx.accounts.bet_commitment;
+    let commitment = &mut ctx.accounts.bet_commitment;
     let player = *ctx.accounts.player.key;
 
     let reclaim_amount = commitment.amount;
@@ -22,6 +22,8 @@ pub fn reclaim_bet_on_timeout(ctx: Context<ReclaimBetOnTimeout>) -> Result<()> {
         .total_player_pot
         .checked_sub(reclaim_amount)
         .ok_or(GameError::TotalPayoutPotDesynced)?;
+
+    commitment.is_claimed = true;
 
     withdraw_from_treasury_to_player(
         game,

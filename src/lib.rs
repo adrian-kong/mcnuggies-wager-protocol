@@ -160,6 +160,7 @@ pub struct BetCommitment {
     pub game: Pubkey,
     pub amount: u64,
 
+    pub is_claimed: bool,
     // keeping track of players who have attempted to reveal their bet and claim their winnings
     // but was unsuccessful due to the host not having enough liquidity.
     // so we can prevent host from rugging them out of their rightful winnings,
@@ -173,6 +174,7 @@ impl BetCommitment {
         + COMMITMENT_LENGTH  // commitment
         + PUBKEY_LENGTH      // game
         + U64_LENGTH         // amount
+        + BOOL_LENGTH        // is_claimed
         + BOOL_LENGTH; // attempted_reveal
 }
 
@@ -264,7 +266,8 @@ pub struct RevealAndClaim<'info> {
         seeds = [b"commitment", game.key().as_ref(), player.key().as_ref()],
         bump,
         constraint = bet_commitment.player == player.key() @ GameError::InvalidPlayerForCommitment,
-        constraint = bet_commitment.game == game.key() @ GameError::InvalidGameReference
+        constraint = bet_commitment.game == game.key() @ GameError::InvalidGameReference,
+        constraint = !bet_commitment.is_claimed @ GameError::BetAlreadySettled,
     )]
     pub bet_commitment: Account<'info, BetCommitment>,
     #[account(mut, seeds = [b"treasury", game.key().as_ref()], bump = game.treasury_bump)]
@@ -277,7 +280,6 @@ pub struct RevealAndClaim<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(commitment: [u8; 32], amount: u64)]
 pub struct WithdrawUnpaidBet<'info> {
     #[account(mut, seeds = [GLOBAL_GAME_SEED], bump = game.bump, constraint = game.is_open_for_reveals @ GameError::RevealPeriodClosed)]
     pub game: Account<'info, Game>,
@@ -289,10 +291,11 @@ pub struct WithdrawUnpaidBet<'info> {
         constraint = bet_commitment.player == player.key() @ GameError::InvalidPlayerForCommitment,
         constraint = bet_commitment.game == game.key() @ GameError::InvalidGameReference,
         constraint = bet_commitment.attempted_reveal @ GameError::BetAlreadySettled,
-        // constraint = game.reveal_deadline.is_some() @ GameError::DeadlineNotSet,
-        // constraint = Some(clock.unix_timestamp) > game.reveal_deadline @ GameError::WithdrawPeriodNotReached,
+        constraint = game.reveal_deadline.is_some() @ GameError::DeadlineNotSet,
+        constraint = Some(clock.unix_timestamp) > game.reveal_deadline @ GameError::WithdrawPeriodNotReached,
         constraint = game.final_claim_deadline.is_some() @ GameError::DeadlineNotSet,
         constraint = Some(clock.unix_timestamp) < game.final_claim_deadline @ GameError::WithdrawPeriodNotReached,
+        constraint = !bet_commitment.is_claimed @ GameError::BetAlreadySettled,
     )]
     pub bet_commitment: Account<'info, BetCommitment>,
     #[account(
@@ -327,6 +330,7 @@ pub struct ReclaimBetOnTimeout<'info> {
         bump,
         constraint = bet_commitment.player == player.key() @ GameError::InvalidPlayerForCommitment,
         constraint = bet_commitment.game == game.key() @ GameError::InvalidGameReference,
+        constraint = !bet_commitment.is_claimed @ GameError::BetAlreadySettled,
     )]
     pub bet_commitment: Account<'info, BetCommitment>,
     #[account(

@@ -32,6 +32,7 @@ pub fn commit_bet(ctx: Context<CommitBet>, commitment: [u8; 32], amount: u64) ->
     bet_commitment.commitment = commitment;
     bet_commitment.game = *game.to_account_info().key;
     bet_commitment.amount = amount;
+    bet_commitment.is_claimed = false;
     bet_commitment.attempted_reveal = false;
 
     game.bet_count = game.bet_count.checked_add(1).ok_or(GameError::Overflow)?;
