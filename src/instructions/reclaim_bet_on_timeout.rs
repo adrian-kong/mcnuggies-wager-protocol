@@ -36,6 +36,5 @@ pub fn reclaim_bet_on_timeout(ctx: Context<ReclaimBetOnTimeout>) -> Result<()> {
         reclaim_amount,
         player
     );
-    msg!("Closing commitment account and returning rent to player.");
     Ok(())
 }

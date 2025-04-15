@@ -11,7 +11,8 @@ declare_id!("8JD6JtkBzExbDZkpQBvowXngMr9tDqLwf5sGGjBacwK8");
 pub const GLOBAL_GAME_SEED: &[u8] = b"ADRIAN_NUGGETS_MINECRAFT_MOVIE";
 pub const GAME_AUTHORITY_PUBKEY: &str = "JDUcdJdTH8j352LvXhWbDKPb7WzTWH8VkfwXeBX2NT7U";
 
-// ENSURE THESE ARE SET BEFORE GOING LIVE, IT SHOULD BE IN ORDER
+// ENSURE THESE ARE SET BEFORE GOING LIVE, IT SHOULD BE IN ORDER, 
+// OTHERWISE THE GAME WILL NOT WORK!!!!
 pub const SUBMISSION_DEADLINE_TIMESTAMP: i64 = 1745208000; // 21st April 2025 4 AM GMT (or 2 PM AEDT)
 pub const REVEAL_DEADLINE_TIMESTAMP: i64 = 1745812800; // 28th April 2025 4 AM GMT (or 2 PM AEDT)
 pub const FINAL_CLAIM_DEADLINE_TIMESTAMP: i64 = 1746408000; // 5th May 2025 4 AM GMT (or 2 PM AEDT)
@@ -100,6 +101,7 @@ pub mod nug_wager_protocol {
 
     // Authority claims after reveal deadline, or if someone flagged illiquidity then after final claim deadline 
     // (as this period between will allow players to claim back their initial stake preventing rug)
+    // This also cleans up game
     pub fn claim_remaining_treasury(ctx: Context<ClaimRemainingTreasury>) -> Result<()> {
         instructions::claim_remaining_treasury(ctx)
     }
@@ -235,7 +237,7 @@ pub struct SubmitResult<'info> {
         constraint = game.is_open_for_bets @ GameError::RevealPeriodClosed,
         constraint = game.result.is_none() @ GameError::ResultAlreadySubmitted,
         constraint = game.submission_deadline.is_some() @ GameError::DeadlineNotSet,
-        constraint = Some(clock.unix_timestamp) < game.submission_deadline @ GameError::SubmissionDeadlineNotReached,
+        constraint = Some(clock.unix_timestamp) < game.submission_deadline @ GameError::SubmissionPeriodExpired,
     )]
     pub game: Account<'info, Game>,
     pub authority: Signer<'info>,
@@ -251,14 +253,14 @@ pub struct RevealAndClaim<'info> {
         seeds = [GLOBAL_GAME_SEED],
         bump = game.bump,
         constraint = game.is_open_for_reveals @ GameError::RevealPeriodClosed,
-        constraint = game.submission_deadline.is_some() @ GameError::DeadlineNotSet,
+        constraint = game.reveal_deadline.is_some() @ GameError::DeadlineNotSet,
         constraint = Some(clock.unix_timestamp) < game.reveal_deadline @ GameError::RevealDeadlineNotReached,
         constraint = game.total_player_pot >= bet_commitment.amount @ GameError::InsufficientPlayerPot,
     )]
     pub game: Account<'info, Game>,
     #[account(
         mut,
-        close = player,
+        // close = player,
         seeds = [b"commitment", game.key().as_ref(), player.key().as_ref()],
         bump,
         constraint = bet_commitment.player == player.key() @ GameError::InvalidPlayerForCommitment,
@@ -281,14 +283,14 @@ pub struct WithdrawUnpaidBet<'info> {
     pub game: Account<'info, Game>,
     #[account(
         mut,
-        close = player,
+        // close = player,
         seeds = [b"commitment", game.key().as_ref(), player.key().as_ref()],
         bump,
         constraint = bet_commitment.player == player.key() @ GameError::InvalidPlayerForCommitment,
         constraint = bet_commitment.game == game.key() @ GameError::InvalidGameReference,
         constraint = bet_commitment.attempted_reveal @ GameError::BetAlreadySettled,
-        constraint = game.reveal_deadline.is_some() @ GameError::DeadlineNotSet,
-        constraint = Some(clock.unix_timestamp) > game.reveal_deadline @ GameError::WithdrawPeriodNotReached,
+        // constraint = game.reveal_deadline.is_some() @ GameError::DeadlineNotSet,
+        // constraint = Some(clock.unix_timestamp) > game.reveal_deadline @ GameError::WithdrawPeriodNotReached,
         constraint = game.final_claim_deadline.is_some() @ GameError::DeadlineNotSet,
         constraint = Some(clock.unix_timestamp) < game.final_claim_deadline @ GameError::WithdrawPeriodNotReached,
     )]
@@ -320,7 +322,7 @@ pub struct ReclaimBetOnTimeout<'info> {
     pub game: Account<'info, Game>,
     #[account(
         mut,
-        close = player, // Return rent to player
+        // close = player, // Return rent to player
         seeds = [b"commitment", game.key().as_ref(), player.key().as_ref()],
         bump,
         constraint = bet_commitment.player == player.key() @ GameError::InvalidPlayerForCommitment,
@@ -345,7 +347,7 @@ pub struct ReclaimBetOnTimeout<'info> {
 pub struct ClaimRemainingTreasury<'info> {
     #[account(
         mut,
-        close = authority, // Game account is NOT closed here
+        // close = authority,
         has_one = authority @ GameError::InvalidAuthority,
         seeds = [GLOBAL_GAME_SEED],
         constraint = game.result.is_some() @ GameError::ResultAlreadySubmitted,
@@ -428,6 +430,4 @@ pub enum GameError {
     TreasuryClaimPeriodNotReached,
     #[msg("Player pot is insufficient to cover bet amount.")]
     InsufficientPlayerPot,
-    #[msg("Treasury is empty, nothing to claim.")]
-    TreasuryIsEmpty,
 }

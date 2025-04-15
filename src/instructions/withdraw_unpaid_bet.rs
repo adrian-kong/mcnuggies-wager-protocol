@@ -35,6 +35,5 @@ pub fn withdraw_unpaid_bet(ctx: Context<WithdrawUnpaidBet>) -> Result<()> {
         reclaim_amount,
         player
     );
-    msg!("Closing commitment account and returning rent to player.");
     Ok(())
 }

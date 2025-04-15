@@ -44,7 +44,6 @@ pub fn reveal_and_claim(ctx: Context<RevealAndClaim>, bet_value: u8, salt: u64) 
             .total_player_pot
             .checked_sub(bet_amount)
             .ok_or(GameError::TotalPayoutPotDesynced)?;
-        msg!("Closing commitment account and returning rent to player.");
         return Ok(());
     }
 
@@ -75,7 +74,6 @@ pub fn reveal_and_claim(ctx: Context<RevealAndClaim>, bet_value: u8, salt: u64) 
             .total_player_pot
             .checked_sub(bet_amount)
             .ok_or(GameError::TotalPayoutPotDesynced)?;
-        msg!("Closing commitment account and returning rent to player.");
         return Ok(());
     }
 
@@ -117,6 +115,5 @@ pub fn reveal_and_claim(ctx: Context<RevealAndClaim>, bet_value: u8, salt: u64) 
     )?;
 
     msg!("Transferred payout {} to player {}. Bet marked as settled. Player should call CleanupBetCommitment to reclaim rent.", payout_amount, player);
-    msg!("Closing commitment account and returning rent to player.");
     Ok(())
 }
