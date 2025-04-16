@@ -80,6 +80,17 @@ pub fn reveal_and_claim(ctx: Context<RevealAndClaim>, bet_value: u8, salt: u64) 
     // Check host liquidity implicitly
     let treasury_balance = ctx.accounts.game_treasury.to_account_info().lamports();
 
+    // if the player's payout is <= initial stake, we can claim back the initial stake to use as payout
+    // since the player lost, we will eagerly claim back the initial stake to pay out the difference
+    if payout_amount <= bet_amount {
+        msg!("Player payout is less than initial stake. Host funds will increase by initial stake and payout will be the difference.");
+        // decreasing player's initial stake from total_player_pot, since payout is \leq initial stake i.e. 10% payout returns 10% of initial stake
+        game.total_player_pot = game
+            .total_player_pot
+            .checked_sub(bet_amount)
+            .ok_or(GameError::TotalPayoutPotDesynced)?;
+    }
+
     // this should represent the portion of liquidity that is the host's pool. NOT USING OTHER CONTESTANT'S MONEY!!!! so they can always reclaim their initial stake
     // total_player_pot can NEVER exceed treasury_balance as it should be backed one to one. treasury MUST NOT withdraw anywhere else without subtracting total_player_pot
     let host_liquidity = treasury_balance
@@ -95,11 +106,16 @@ pub fn reveal_and_claim(ctx: Context<RevealAndClaim>, bet_value: u8, salt: u64) 
         msg!("Host liquidity insufficient for payout. Player can use withdraw_unpaid_bet to reclaim their bet.");
         return Ok(());
     }
-    // updating total_player_pot to reflect the payout, decrementing initial stake so remaining comes out of host's liquidity
-    game.total_player_pot = game
-        .total_player_pot
-        .checked_sub(bet_amount)
-        .ok_or(GameError::TotalPayoutPotDesynced)?;
+
+    // this handles the alternate case to claim back initial stake from pot, IF payout is successful,
+    // host liquidity was sufficient for payout
+    if payout_amount > bet_amount {
+        // updating total_player_pot to reflect the payout, decrementing initial stake so remaining comes out of host's liquidity
+        game.total_player_pot = game
+            .total_player_pot
+            .checked_sub(bet_amount)
+            .ok_or(GameError::TotalPayoutPotDesynced)?;
+    }
 
     commitment_account.is_claimed = true;
     // perform payout
