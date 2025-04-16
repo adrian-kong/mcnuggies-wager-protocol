@@ -257,6 +257,7 @@ pub struct RevealAndClaim<'info> {
         constraint = game.is_open_for_reveals @ GameError::RevealPeriodClosed,
         constraint = game.reveal_deadline.is_some() @ GameError::DeadlineNotSet,
         constraint = Some(clock.unix_timestamp) < game.reveal_deadline @ GameError::RevealDeadlineNotReached,
+        // checking if total pot has the initial stakes. sanity check as total_player_pot should be in sync with player's initial stakes.
         constraint = game.total_player_pot >= bet_commitment.amount @ GameError::InsufficientPlayerPot,
     )]
     pub game: Account<'info, Game>,
@@ -267,6 +268,7 @@ pub struct RevealAndClaim<'info> {
         bump,
         constraint = bet_commitment.player == player.key() @ GameError::InvalidPlayerForCommitment,
         constraint = bet_commitment.game == game.key() @ GameError::InvalidGameReference,
+        // bet must not be claimed
         constraint = !bet_commitment.is_claimed @ GameError::BetAlreadySettled,
     )]
     pub bet_commitment: Account<'info, BetCommitment>,
@@ -291,11 +293,16 @@ pub struct WithdrawUnpaidBet<'info> {
         constraint = bet_commitment.player == player.key() @ GameError::InvalidPlayerForCommitment,
         constraint = bet_commitment.game == game.key() @ GameError::InvalidGameReference,
         constraint = bet_commitment.attempted_reveal @ GameError::BetAlreadySettled,
+        // withdraw period must be passed
         constraint = game.reveal_deadline.is_some() @ GameError::DeadlineNotSet,
         constraint = Some(clock.unix_timestamp) > game.reveal_deadline @ GameError::WithdrawPeriodNotReached,
+        // final claim deadline must NOT be passed
         constraint = game.final_claim_deadline.is_some() @ GameError::DeadlineNotSet,
         constraint = Some(clock.unix_timestamp) < game.final_claim_deadline @ GameError::WithdrawPeriodNotReached,
+        // bet must not be claimed
         constraint = !bet_commitment.is_claimed @ GameError::BetAlreadySettled,
+         // checking if total pot has the initial stakes. sanity check as total_player_pot should be in sync with player's initial stakes.
+         constraint = game.total_player_pot >= bet_commitment.amount @ GameError::InsufficientPlayerPot,
     )]
     pub bet_commitment: Account<'info, BetCommitment>,
     #[account(
