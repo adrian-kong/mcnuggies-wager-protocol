@@ -5,7 +5,7 @@ use anchor_lang::solana_program::sysvar::clock::Clock;
 use anchor_lang::solana_program::sysvar;
 pub mod instructions;
 
-declare_id!("8JD6JtkBzExbDZkpQBvowXngMr9tDqLwf5sGGjBacwK8");
+declare_id!("FFbz83mccNiYLeUSK1GQBp17ezHp6H6jCKMKtYiGXgXV");
 
 // --- Hardcoded Constants ---
 pub const GLOBAL_GAME_SEED: &[u8] = b"ADRIAN_NUGGETS_MINECRAFT_MOVIE";
@@ -20,11 +20,11 @@ pub const FINAL_CLAIM_DEADLINE_TIMESTAMP: i64 = 1746403199; // Sunday, 4th May 2
 // --- Payout Curve Constants ---
 // Multiplier M(x) = 3.9 * exp(-0.1 * x) + 0.1 where x = result - guess
 // We use a scaling factor to represent the multiplier as an integer
-pub const PAYOUT_SCALE: u64 = 1_000_000; // 6 decimal places precision
+pub const PAYOUT_SCALE: u32 = 1_000_000; // 6 decimal places precision
 
 // Precomputed lookup table for M(x) * PAYOUT_SCALE for x = 0 to 100
 // Calculated using `round((3.9 * exp(-0.14 * x) + 0.1) * 1_000_000)`
-pub const PAYOUT_MULTIPLIER_LUT: [u64; 101] = [
+pub const PAYOUT_MULTIPLIER_LUT: [u32; 101] = [
     4_000_000, 3_490_497, 3_047_557, 2_662_483, 2_327_715, 2_036_683, 1_783_671, 1_563_713,
     1_372_491, 1_206_251, 1_061_728, 936_086, 826_859, 731_900, 649_348, 577_580, 515_188, 460_947,
     413_792, 372_798, 337_159, 306_176, 279_241, 255_825, 235_468, 217_770, 202_384, 189_008,
@@ -205,7 +205,7 @@ pub struct CommitBet<'info> {
         mut, 
         seeds = [GLOBAL_GAME_SEED], 
         bump = game.bump, 
-        constraint = game.is_open_for_bets && !game.is_open_for_reveals @ GameError::BettingClosed, 
+        constraint = game.is_open_for_bets && !game.is_open_for_reveals @ GameError::ResultAlreadySubmitted, 
         constraint = game.result.is_none() @ GameError::ResultAlreadySubmitted,
         constraint = game.submission_deadline.is_some() @ GameError::DeadlineNotSet,
         constraint = Some(clock.unix_timestamp) < game.submission_deadline @ GameError::SubmissionDeadlineNotReached,
@@ -301,8 +301,8 @@ pub struct WithdrawUnpaidBet<'info> {
         constraint = Some(clock.unix_timestamp) < game.final_claim_deadline @ GameError::WithdrawPeriodNotReached,
         // bet must not be claimed
         constraint = !bet_commitment.is_claimed @ GameError::BetAlreadySettled,
-         // checking if total pot has the initial stakes. sanity check as total_player_pot should be in sync with player's initial stakes.
-         constraint = game.total_player_pot >= bet_commitment.amount @ GameError::InsufficientPlayerPot,
+        // checking if total pot has the initial stakes. sanity check as total_player_pot should be in sync with player's initial stakes.
+        constraint = game.total_player_pot >= bet_commitment.amount @ GameError::InsufficientPlayerPot,
     )]
     pub bet_commitment: Account<'info, BetCommitment>,
     #[account(
@@ -385,60 +385,28 @@ pub struct ClaimRemainingTreasury<'info> {
 
 #[error_code]
 pub enum GameError {
-    #[msg("Betting is currently closed for this game.")]
-    BettingClosed,
-    #[msg("The result has already been submitted.")]
     ResultAlreadySubmitted,
-    #[msg("Invalid authority for this action.")]
     InvalidAuthority,
     #[msg("Bet value must be between 0 and 100.")]
     InvalidBetValue,
-    #[msg("Cannot reveal/claim until the result is submitted.")]
     ResultNotSubmitted,
-    #[msg("Reveal period is closed (either generally or via deadline passed).")]
     RevealPeriodClosed,
-    #[msg("The revealed bet and salt do not match the commitment hash.")]
     CommitmentMismatch,
-    #[msg("The signer is not the player associated with this commitment.")]
     InvalidPlayerForCommitment,
-    #[msg("Account references the wrong game.")]
     InvalidGameReference,
-    #[msg("Calculation overflow.")]
     Overflow,
-    #[msg("Bet amount must be greater than zero.")]
     InvalidBetAmount,
-    #[msg("Player has already committed to this game.")]
-    PlayerAlreadyCommitted,
 
-    // New Errors for Timeouts
-    #[msg("Betting/submission period has expired.")]
     SubmissionPeriodExpired,
-    #[msg("Reveal/claim period has expired.")]
-    RevealPeriodExpired,
-    #[msg("Submission deadline has not been reached yet.")]
     SubmissionDeadlineNotReached,
-    #[msg("Reveal deadline has not been reached yet.")]
     RevealDeadlineNotReached,
-    #[msg("Result already submitted, cannot reclaim bet via timeout.")]
-    ResultAlreadySubmittedCannotReclaim,
-    #[msg("Deadline timestamp not set in game account, cannot check timeout.")]
     DeadlineNotSet,
-    #[msg("Insufficient funds in treasury to reclaim bet on timeout.")]
     InsufficientTreasuryForReclaim,
-    #[msg("Reveal deadline must be after the submission deadline.")]
-    RevealDeadlineMustBeAfterSubmission,
-    #[msg("Cleanup cannot be performed until the reveal deadline has passed.")]
-    CleanupNotAllowedYet,
-    #[msg("Host liquidity insufficient to cover payout.")]
-    InsufficientHostLiquidity,
     #[msg("Total Payout Pot Desynced??? Some bug must have happened.")]
     TotalPayoutPotDesynced,
-    #[msg("Bet has already been settled (paid out, lost, or reclaimed).")]
     BetAlreadySettled,
-    #[msg("Withdrawal period (after reveal deadline) not reached.")]
+    #[msg("Withdraw unpaid period (after reveal deadline) not reached.")]
     WithdrawPeriodNotReached,
-    #[msg("Treasury claim period not reached.")]
     TreasuryClaimPeriodNotReached,
-    #[msg("Player pot is insufficient to cover bet amount.")]
     InsufficientPlayerPot,
 }
