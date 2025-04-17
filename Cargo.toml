@@ -3,6 +3,8 @@ name = "nug-wager-protocol"
 version = "0.1.0"
 description = "Created with Anchor"
 edition = "2021"
+license = "MIT"  # Add a license (e.g., MIT, Apache-2.0)
+repository = "https://github.com/adrian-kong/mcnuggies-wager-protocol"
 
 [lib]
 crate-type = ["cdylib", "lib"]
